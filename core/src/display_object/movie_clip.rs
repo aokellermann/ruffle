@@ -3155,7 +3155,7 @@ impl<'gc> TInteractiveObject<'gc> for MovieClip<'gc> {
 
             let mut found_propagate = None;
 
-            let mut clip_layers = self
+            let clip_layers: SmallVec<[_; 4]> = self
                 .iter_render_list()
                 .flat_map(|child| {
                     if child.clip_depth() > 0 {
@@ -3167,8 +3167,7 @@ impl<'gc> TInteractiveObject<'gc> for MovieClip<'gc> {
                         None
                     }
                 })
-                .rev()
-                .peekable();
+                .collect();
 
             // Interactive children run first, followed by non-interactive children.
             // Depth is considered within each group.
@@ -3215,24 +3214,24 @@ impl<'gc> TInteractiveObject<'gc> for MovieClip<'gc> {
                     Avm2MousePick::Miss
                 };
 
-                while let Some((clip, clip_range)) = clip_layers.peek() {
-                    // This clip layer no longer applies to the remaining children (which all have lower depth values).
-                    // This is a rare case where we actually use 'child.depth()' in AVM2 - child.depth()
-                    // gets set from a PlaceObject tag, and may be *greater* than position in the render list.
-                    if *clip_range.start() > child.depth() {
-                        clip_layers.next();
-                        continue;
+                // Find the topmost clip layer starting at or below this child's depth.
+                // This is a rare case where we actually use 'child.depth()' in AVM2 - child.depth()
+                // gets set from a PlaceObject tag, and may be *greater* than position in the render list.
+                // Children are not visited in depth order (interactive children go first, and children
+                // added by script keep depth 0 while sitting at the end of the render list), so this
+                // lookup must not consume clip layers as it goes.
+                if let Some((clip, clip_range)) = clip_layers
+                    .iter()
+                    .rev()
+                    .find(|(_, clip_range)| *clip_range.start() <= child.depth())
+                    && clip_range.contains(&child.depth())
+                {
+                    // If the clip layer applies to the current child, check if the child is masked by the clip.
+                    // If the position isn't within the mask region, then treat this as a miss unconditionally.
+                    // We'll continue the outer loop over the children, as another child may be hit.
+                    if !clip.hit_test_shape(context, point, options) {
+                        res = Avm2MousePick::Miss;
                     }
-
-                    if clip_range.contains(&child.depth()) {
-                        // If the clip layer applies to the current child, check if the child is masked by the clip.
-                        // If the position isn't within the mask region, then treat this as a miss unconditionally.
-                        // We'll continue the outer loop over the children, as another child may be hit.
-                        if !clip.hit_test_shape(context, point, options) {
-                            res = Avm2MousePick::Miss;
-                        }
-                    }
-                    break;
                 }
 
                 match res {
